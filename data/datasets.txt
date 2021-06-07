@@ -1,0 +1,21 @@
+name			accuracy		experimented		exp-accuracy		RL-accuracy
+audiology		77.8%			Y					79%
+breast-cancer	71.6%			Y					81.4%
+breast-w		96.9%			Y					97.7%
+cmc				51.6%			Y					54.9%
+credit-a		85%				
+credit-g		70%				
+dermatology		96%				Y					96.7%
+diabetes		70%				
+ecoli			83%				Y					88.5%
+glass			68%				Y					80.6%
+heart-h			79%				
+heart-s			37%				
+heart-statlog	81%				
+hepatitis		78%				Y					91.8%
+image			97%				
+ionosphere		90%				
+iris			95%				Y					100%
+kr-vs-kp		99%				
+labor			92%				
+lymph			84%				Y					88.6%
