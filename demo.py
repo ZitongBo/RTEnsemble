@@ -1,416 +1,290 @@
-import gym
-# from env import PreprocessEnv
-from run import Arguments, train_and_evaluate, train_and_evaluate_mp
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.naive_bayes import GaussianNB
+from collections import Counter
+from joblib import dump, load
+import pandas as pd
+import numpy as np
+import os
+from adaboost import AdaBoost
+import fs
+import reader as rdr
+import util as U
+import random as rd
+import argparse
+import time
+from config import *
+import sys
+from collections import Counter
+import selection
+from importlib import import_module
+from sklearn.model_selection import KFold
+from classifier import *
 
-"""[ElegantRL](https://github.com/AI4Finance-LLC/ElegantRL)"""
+def train(dataset,
+          algorithm,
+          random_state,
+          num_clf=100,
+          num_training=10000,
+          learning_rate=0.1,
+          discount_factor=1.0,
+          epsilon=1.0,
+          portion=0.56,
+          sequential=True,
+          **network_kwargs):
+    rd.seed(random_state)
+    np.random.seed(random_state)
 
-gym.logger.set_level(40)  # Block warning: 'WARN: Box bound precision lowered by casting to float32'
+    start_time = time.time()
+    data = rdr.read(dataset)
+    time_cost = time.time() - start_time
+    print('reading data takes %.3f sec' % (time_cost))
+    print('data shape:', data.shape)
+    # shuffle dataset
+    # data = data.sample(frac=1, random_state=random_state).reset_index(drop=True)
 
+    num_feature = data.shape[1] - 1
+    label_map = dict()
+    # label_map[None] = 'N'
+    for l in data.iloc[:, -1]:
+        if l not in label_map:
+            label_map[l] = len(label_map)
+    print('number of labels: %d' % (len(label_map)))
 
-def demo1_discrete_action_space():
-    args = Arguments(agent=None, env=None, gpu_id=None)  # see Arguments() to see hyper-parameters
+    clf_type = 1
+    if clf_type == 1:
+        clf_types = ['dt']
+    elif clf_type == 2:
+        clf_types = ['mlp']
+    elif clf_type == 3:
+        clf_types = ['knn']
+    elif clf_type == 4:
+        clf_types = ['nb']
+    elif clf_type == 5:
+        clf_types = ['dt', 'mlp', 'knn', 'nb']
+    # print(clf_types)
 
-    '''choose an DRL algorithm'''
-    # from agent import AgentD3QN  # AgentDQN,AgentDuelDQN, AgentDoubleDQN,
-    # args.agent = AgentD3QN()
-    from agent import AgentDuelingDQN  # AgentDQN,AgentDuelDQN, AgentDoubleDQN,
-    args.agent = AgentDuelingDQN()
+    feature_type = 3
+    features = list()
+    for i in range(num_clf):
+        if feature_type == 1:
+            features.append(list(range(num_feature)))
+        elif feature_type == 2:
+            features.append(rd.choices(list(range(num_feature)),
+                                       k=int(np.ceil(num_feature * 0.5))))
+        elif feature_type == 3:
+            # every 1/3 classifiers get 1/3 features
+            first_cut = int(np.ceil(num_feature / 3))
+            second_cut = int(np.ceil(num_feature / 3 * 2))
+            index = int((num_clf - 1) / 3) + 1
+            if i < index:
+                features.append(list(range(first_cut)))
+            elif i < 2 * index:
+                features.append(list(range(first_cut, second_cut)))
+            else:
+                features.append(list(range(second_cut, num_feature)))
+    # print(features)
 
-    '''choose environment'''
-    "TotalStep: 2e3, TargetReturn: 200, UsedTime: 20s, CartPole-v0"
-    "TotalStep: 2e3, TargetReturn: 200, UsedTime: 30s, CartPole-v0 rollout_num = 2"
-    # args.env = PreprocessEnv(env=gym.make('CartPole-v0'))
-    # args.net_dim = 2 ** 7  # change a default hyper-parameters
-    # args.batch_size = 2 ** 7
-    # args.target_step = 2 ** 8
-    # args.eval_gap = 2 ** 0
+    mv_stat = [0.0] * 4
+    wv_stat = [0.0] * 4
+    fs_stat = [0.0] * 4
+    adab_stat = [0.0] * 4
+    eprl_stat = [0.0] * 4
+    ibrl_stat = [0.0] * 4
+    time_costs = [0.0] * 7
+    fs_size = 0.0
+    eprl_size = 0.0
+    ibrl_size = 0.0
+    avg_full_test_accu = 0.0
+    avg_part_test_accu = 0.0
 
-    "TotalStep: 6e4, TargetReturn: 200, UsedTime: 600s, LunarLander-v2, D3DQN"
-    "TotalStep: 4e4, TargetReturn: 200, UsedTime: 600s, LunarLander-v2, DuelDQN"
-    args.env = PreprocessEnv(env=gym.make('LunarLander-v2'))
-    args.net_dim = 2 ** 8
-    args.batch_size = 2 ** 8
+    term = 10
+    kf = KFold(n_splits=term)
+    for i, (train_idx, test_idx) in enumerate(kf.split(data)):
+        print('\nRunning iteration %d of 10 fold...' % (i + 1))
+        out_model = []
+        out_res = []
+        out_time = []
+        train = data.iloc[train_idx, :]
+        test = data.iloc[test_idx, :]
+        train_clf, train_ens = rdr.splitByPortion(train, portion, random_state)
+        # print(train_clf.shape, train_ens.shape, test.shape)
 
-    '''train and evaluate'''
-    train_and_evaluate(args)
-    # args.rollout_num = 2
-    # train_and_evaluate_mp(args)
-
-
-def demo2_continuous_action_space_off_policy():
-    args = Arguments(if_on_policy=False)
-
-    '''choose an DRL algorithm'''
-    from agent import AgentModSAC  # AgentSAC, AgentTD3, AgentDDPG
-    args.agent = AgentModSAC()
-
-    '''choose environment'''
-    "TotalStep: 3e4, TargetReturn: -200, UsedTime: 300s, Pendulum-v0, TD3"
-    "TotalStep: 2e4, TargetReturn: -200, UsedTime: 200s, Pendulum-v0, ModSAC "
-    env = gym.make('Pendulum-v0')
-    env.target_return = -200  # set target_return manually for env 'Pendulum-v0'
-    args.env = PreprocessEnv(env=env)
-    args.reward_scale = 2 ** -3  # RewardRange: -1800 < -200 < -50 < 0
-
-    "TD3    TotalStep:  9e4, TargetReturn: 100, UsedTime: 3ks, LunarLanderContinuous-v2"
-    "TD3    TotalStep: 20e4, TargetReturn: 200, UsedTime: 5ks, LunarLanderContinuous-v2"
-    "SAC    TotalStep:  9e4, TargetReturn: 200, UsedTime: 3ks, LunarLanderContinuous-v2"
-    "ModSAC TotalStep:  5e4, TargetReturn: 200, UsedTime: 1ks, LunarLanderContinuous-v2"
-    # args.env = PreprocessEnv(env=gym.make('LunarLanderContinuous-v2'))
-    # args.reward_scale = 2 ** 0  # RewardRange: -800 < -200 < 200 < 302
-    # args.eval_times2 = 2 ** 4  # set a large eval_times to get a precise learning curve
-
-    "ModSAC TotalStep: 2e5, TargetReturn: 300, UsedTime: 5000s, BipedalWalker-v3"
-    # args.env = PreprocessEnv(env=gym.make('BipedalWalker-v3'))
-    # args.reward_scale = 2 ** 0  # RewardRange: -200 < -150 < 300 < 334
-    # args.net_dim = 2 ** 8
-    # args.break_step = int(2e5)
-    # args.if_allow_break = True  # allow break training when reach goal (early termination)
-    # args.break_step = int(2e5 * 4)  # break training after 'total_step > break_step'
-
-    '''train and evaluate'''
-    train_and_evaluate(args)
-    # args.rollout_num = 4
-    # train_and_evaluate_mp(args)
-
-
-def demo2_continuous_action_space_on_policy():
-    args = Arguments(if_on_policy=True)  # hyper-parameters of on-policy is different from off-policy
-    args.random_seed = 1943
-
-    '''choose an DRL algorithm'''
-    from agent import AgentPPO
-    args.agent = AgentPPO()
-    args.agent.if_use_gae = False
-
-    '''choose environment'''
-    "TotalStep: 2e5, TargetReturn: -200, UsedTime: 300s, Pendulum-v0, PPO"
-    env = gym.make('Pendulum-v0')
-    env.target_return = -200  # set target_return manually for env 'Pendulum-v0'
-    args.env = PreprocessEnv(env=env)
-    args.reward_scale = 2 ** -3  # RewardRange: -1800 < -200 < -50 < 0
-    args.repeat_times = 2 ** 3
-    args.target_step = 200 * 8
-    args.eval_gap = 2 ** 6
-
-    "PPO    TotalStep: 8e5, TargetReturn: 200, UsedTime: 1500s, LunarLanderContinuous-v2"
-    # args.env = PreprocessEnv(env=gym.make('LunarLanderContinuous-v2'))
-    # args.reward_scale = 2 ** 0  # RewardRange: -800 < -200 < 200 < 302
-
-    "PPO    TotalStep: 8e5, TargetReturn: 300, UsedTime: 1800s, BipedalWalker-v3"
-    # args.env = PreprocessEnv(env=gym.make('BipedalWalker-v3'))
-    # args.reward_scale = 2 ** 0  # RewardRange: -200 < -150 < 300 < 334
-    # args.gamma = 0.96
-
-    '''train and evaluate'''
-    # train_and_evaluate(args)
-    args.rollout_num = 2
-    train_and_evaluate_mp(args)
-
-
-def demo3_custom_env_fin_rl():
-    from agent import AgentPPO
-
-    '''choose an DRL algorithm'''
-    args = Arguments(if_on_policy=True)
-    args.agent = AgentPPO()
-    args.agent.if_use_gae = True
-    args.agent.lambda_entropy = 0.04
-
-    "TotalStep: 10e4, TargetReturn: 3.0, UsedTime:  200s, FinanceStock-v1"
-    "TotalStep: 20e4, TargetReturn: 4.0, UsedTime:  400s, FinanceStock-v1"
-    "TotalStep: 30e4, TargetReturn: 4.2, UsedTime:  600s, FinanceStock-v1"
-    from envs.FinRL.StockTrading import StockTradingEnv
-    gamma = 0.995
-    args.env = StockTradingEnv(if_eval=False, gamma=gamma)
-    args.env_eval = StockTradingEnv(if_eval=True, gamma=gamma)
-
-    args.gamma = gamma
-    args.break_step = int(3e5)
-    args.net_dim = 2 ** 9
-    args.max_step = args.env.max_step
-    args.max_memo = args.max_step * 4
-    args.batch_size = 2 ** 10
-    args.repeat_times = 2 ** 3
-    args.eval_gap = 2 ** 4
-    args.eval_times1 = 2 ** 3
-    args.eval_times2 = 2 ** 5
-    args.if_allow_break = False
-
-    '''train and evaluate'''
-    # train_and_evaluate(args)
-    args.rollout_num = 4
-    train_and_evaluate_mp(args)
+        # train or load ensembles
+        start_time = time.time()
+        # full ensemble
+        persistence = 'models/clfs/d{}n{:d}c{:d}f{:d}r{:d}/i{:d}full/'.format(
+            dataset, num_clf, clf_type, feature_type, random_state, i)
+        if LOAD_CLF:
+            full_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+                                     persistence=persistence)
+        else:
+            full_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+                                     random_state=random_state)
+            full_ensemble.train(train)
+            full_ensemble.saveClf(persistence)
+        noTree = 5
+        print(full_ensemble.randomSelect(test,10))
+        print(full_ensemble.randomSelect(test, 10))
+        Tree = []
+        for i in range(noTree):
+            Tree1 = selection.EnsembleTree(full_ensemble, train, i+1)
+            Tree.append(Tree1)
+        forest = selection.EnsembleForest(Tree, full_ensemble.label_map)
+        print('accuracy',forest.accuracy(test, 10))
 
 
-def demo4_bullet_mujoco_off_policy():
-    args = Arguments(if_on_policy=False)
-    args.random_seed = 10086
+        # part ensemble
+        persistence = 'models/clfs/d{}n{:d}c{:d}f{:d}r{:d}/i{:d}part/'.format(
+            dataset, num_clf, clf_type, feature_type, random_state, i)
+        if LOAD_CLF:
+            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+                                     persistence=persistence)
+        else:
+            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+                                     random_state=random_state)
+            part_ensemble.train(train_clf)
+            part_ensemble.saveClf(persistence)
+        time_cost = time.time() - start_time
+        time_costs[0] += time_cost
+        print('%s ensembles takes %.3f sec' %
+              ('loading' if LOAD_CLF else 'training', time_cost))
 
-    from agent import AgentModSAC  # AgentSAC, AgentTD3, AgentDDPG
-    args.agent = AgentModSAC()  # AgentSAC(), AgentTD3(), AgentDDPG()
-    args.agent.if_use_dn = True
+        # creat environment
+        # start_time = time.time()
+        real_set = [train_ens.iloc[:, -1], test.iloc[:, -1]]
+        res_set = [part_ensemble.results(train_ens), part_ensemble.results(test)]
+        prob_set = [part_ensemble.resProb(train_ens), part_ensemble.resProb(test)]
+        # # env = Environment(num_clf, real_set, res_set, prob_set, label_map)
+        # time_cost = time.time() - start_time
+        # time_costs[1] += time_cost
+        # print('creating environment takes %.3f sec' % (time_cost))
 
-    import pybullet_envs  # for python-bullet-gym
-    dir(pybullet_envs)
+        # get the performance of basic classifiers
+        # full ensemble
+        full_test_accu = full_ensemble.accuracy(test)
+        avg_full_test_accu += np.mean(full_test_accu)
+        # part ensemble
+        part_test_accu = part_ensemble.accuracy(test)
+        avg_part_test_accu += np.mean(part_test_accu)
 
-    "TotalStep:  5e4, TargetReturn: 18, UsedTime: 1100s, ReacherBulletEnv-v0"
-    "TotalStep: 30e4, TargetReturn: 25, UsedTime:     s, ReacherBulletEnv-v0"
-    args.env = PreprocessEnv(gym.make('ReacherBulletEnv-v0'))
-    args.env.max_step = 2 ** 10  # important, default env.max_step=150
-    args.reward_scale = 2 ** 0  # -80 < -30 < 18 < 28
-    args.gamma = 0.96
-    args.break_step = int(6e4 * 8)  # (4e4) 8e5, UsedTime: (300s) 700s
-    args.eval_times1 = 2 ** 2
-    args.eval_times1 = 2 ** 5
-    args.if_per = True
+        # voting techniques
+        start_time = time.time()
+        # majority vote
+        mv_cmatrix = full_ensemble.majorityVote(test)
+        # print(mv_cmatrix)
+        mv_res = U.computeConfMatrix(mv_cmatrix)
+        for s in range(4):
+            mv_stat[s] += mv_res[s]
+        out_model.append('mv')
+        out_res.append(mv_res)
+        # weighted vote
+        wv_cmatrix = full_ensemble.weightedVote(test)
+        # print(wv_cmatrix)
+        wv_res = U.computeConfMatrix(wv_cmatrix)
+        for s in range(4):
+            wv_stat[s] += wv_res[s]
+        out_model.append('wv')
+        out_res.append(wv_res)
+        time_cost = time.time() - start_time
+        out_time.append(time_cost)
+        time_costs[2] += time_cost
+        print('voting takes %.3f sec' % (time_cost))
 
-    train_and_evaluate(args)
+        # FS
+        start_time = time.time()
+        fs_model = fs.train(num_clf, real_set[0], res_set[0])
+        fs_size += len(fs_model)
+        fs_cmatrix = fs.evaluation(fs_model, real_set[1], res_set[1], label_map)
+        # print(fs_cmatrix)
+        fs_res = U.computeConfMatrix(fs_cmatrix)
+        for s in range(4):
+            fs_stat[s] += fs_res[s]
+        out_model.append('fs')
+        out_res.append(fs_res)
+        time_cost = time.time() - start_time
+        out_time.append(time_cost)
+        time_costs[3] += time_cost
+        print('FS takes %.3f sec' % (time_cost))
 
-    "TotalStep:  3e5, TargetReward: 1500, UsedTime:  4ks, AntBulletEnv-v0 ModSAC if_use_dn"
-    "TotalStep:  4e5, TargetReward: 2500, UsedTime:  6ks, AntBulletEnv-v0 ModSAC if_use_dn"
-    "TotalStep: 16e5, TargetReward: 3247, UsedTime: 90ks, AntBulletEnv-v0 ModSAC if_use_dn"
-    args.env = PreprocessEnv(env=gym.make('AntBulletEnv-v0'))
-    args.break_step = int(6e5 * 8)  # (5e5) 1e6, UsedTime: (15,000s) 30,000s
-    args.if_allow_break = False
-    args.reward_scale = 2 ** -2  # RewardRange: -50 < 0 < 2500 < 3340
-    args.max_memo = 2 ** 21
-    args.batch_size = 2 ** 9
-    args.repeat_times = 2 ** 1
-    args.eval_gap = 2 ** 9  # for Recorder
-    args.eva_size1 = 2 ** 1  # for Recorder
-    args.eva_size2 = 2 ** 3  # for Recorder
+        # AdaBoost
+        start_time = time.time()
+        adab = AdaBoost(num_clf, random_state)
+        adab.train(train)
+        adab_cmatrix = adab.evaluation(test, label_map)
+        adab_res = U.computeConfMatrix(adab_cmatrix)
+        for s in range(4):
+            adab_stat[s] += adab_res[s]
+        out_model.append('adab')
+        out_res.append(adab_res)
+        time_cost = time.time() - start_time
+        out_time.append(time_cost)
+        time_costs[4] += time_cost
+        print('AdaBoost takes %.3f sec' % (time_cost))
 
-    # train_and_evaluate(args)
-    args.rollout_num = 4
-    train_and_evaluate_mp(args)
+        '''
+        # EPRL
+        start_time = time.time()
 
+        time_cost = time.time() - start_time
+        out_time.append(time_cost)
+        time_costs[5] += time_cost
+        print('EPRL takes %.3f sec' % (time_cost))
 
-def demo4_bullet_mujoco_on_policy():
-    args = Arguments(if_on_policy=True)  # hyper-parameters of on-policy is different from off-policy
+        # IBRL
+        start_time = time.time()
+        model_folder = 'models/ibrls/d{}n{:d}c{:d}f{:d}r{:d}/'.format(
+            dataset, num_clf, clf_type, feature_type, random_state)
+        if not LOAD_IBRL and not os.path.isdir(model_folder):
+            os.makedirs(model_folder)
+        model_path = '{}/i{:d}.ibrl'.format(model_folder, i)
+        # print(model_path)
+        if LOAD_IBRL:
+            model.load(model_path)
+        else:
+            learn = get_learn_function(algorithm)
+            model = learn(env, 0, num_training, learning_rate, epsilon, 
+                discount_factor, random_state, **network_kwargs)
+            model.save(model_path)
+        ibrl_cmatrix, avg_clf = env.evaluation(model, 1, verbose=False)
+        ibrl_size += avg_clf
+        # print(ibrl_cmatrix)
+        ibrl_res = U.computeConfMatrix(ibrl_cmatrix)
+        for s in range(4):
+            ibrl_stat[s] += ibrl_res[s]
+        out_model.append('rl')
+        out_res.append(ibrl_res)
+        time_cost = time.time() - start_time
+        out_time.append(time_cost)
+        time_costs[6] += time_cost
+        print('IBRL takes %.3f sec' % (time_cost))
+        '''
+        U.outputs(out_model, out_res)
+        print(np.mean(full_test_accu))
+        print(U.formatFloats(full_test_accu, 2) + '\n')
+        print(np.mean(part_test_accu))
+        print(U.formatFloats(part_test_accu, 2) + '\n')
 
-    import pybullet_envs  # for python-bullet-gym
-    dir(pybullet_envs)
-
-    "TotalStep: 1e5, TargetReturn: 18, UsedTime:  3ks, ReacherBulletEnv-v0, PPO"
-    "TotalStep: 1e6, TargetReturn: 18, UsedTime: 30ks, ReacherBulletEnv-v0, PPO"
-    args.env = PreprocessEnv(gym.make('ReacherBulletEnv-v0'))
-
-    from agent import AgentPPO
-    args.agent = AgentPPO()
-    args.agent.if_use_gae = True
-
-    args.break_step = int(2e5 * 8)
-    args.reward_scale = 2 ** 0  # RewardRange: -15 < 0 < 18 < 25
-    args.gamma = 0.96
-    args.eval_times1 = 2 ** 2
-    args.eval_times1 = 2 ** 5
-
-    # train_and_evaluate(args)
-    args.rollout_num = 4
-    train_and_evaluate_mp(args)
-
-    "TotalStep:  3e6, TargetReturn: 1500, UsedTime:  2ks, AntBulletEnv-v0, PPO"
-    "TotalStep: 10e6, TargetReturn: 2500, UsedTime:  6ks, AntBulletEnv-v0, PPO"
-    "TotalStep: 46e6, TargetReturn: 3017, UsedTime: 25ks, AntBulletEnv-v0, PPO"
-    args.env = PreprocessEnv(env=gym.make('AntBulletEnv-v0'))
-
-    from agent import AgentPPO
-    args.agent = AgentPPO()
-    args.agent.if_use_gae = True
-    args.agent.lambda_entropy = 0.05
-    args.agent.lambda_gae_adv = 0.97
-
-    args.if_allow_break = False
-    args.break_step = int(8e6 * 8)  # (5e5) 1e6, UsedTime: (15,000s) 30,000s
-    args.reward_scale = 2 ** -2  # (-50) 0 ~ 2500 (3340)
-    args.max_memo = args.env.max_step * 4
-    args.batch_size = 2 ** 11  # 10
-    args.repeat_times = 2 ** 3
-    args.eval_gap = 2 ** 8  # for Recorder
-    args.eva_size1 = 2 ** 1  # for Recorder
-    args.eva_size2 = 2 ** 3  # for Recorder
-
-    # train_and_evaluate(args)
-    args.rollout_num = 4
-    train_and_evaluate_mp(args)
-
-    "TotalStep:  3e6, TargetReward: 1500, UsedTime:  3ks, HumanoidBulletEnv-v0 PPO"
-    "TotalStep:  6e6, TargetReward: 2500, UsedTime:  5ks, HumanoidBulletEnv-v0 PPO"
-    "TotalStep: 23e6, TargetReward: 3000, UsedTime: 19ks, HumanoidBulletEnv-v0 PPO"
-    "TotalStep: 31e5, TargetReward: 3139, UsedTime: 25ks, HumanoidBulletEnv-v0 PPO"
-    args.env = PreprocessEnv(env=gym.make('HumanoidBulletEnv-v0'))
-    args.env.target_return = 2500
-
-    from agent import AgentPPO
-    args.agent = AgentPPO()
-    args.agent.if_use_gae = True
-    args.agent.lambda_entropy = 0.02
-    args.agent.lambda_gae_adv = 0.97
-
-    args.if_allow_break = False
-    args.break_step = int(6e6 * 8)
-    args.reward_scale = 2 ** -1
-    args.max_memo = args.env.max_step * 4
-    args.batch_size = 2 ** 11
-    args.repeat_times = 2 ** 3
-    args.eval_gap = 2 ** 9  # for Recorder
-    args.eva_size1 = 2 ** 1  # for Recorder
-    args.eva_size2 = 2 ** 3  # for Recorder
-
-    # train_and_evaluate(args)
-    args.rollout_num = 4
-    train_and_evaluate_mp(args)
-
-
-'''DEMO wait for updating'''
-
-# def train__demo():
-#     pass
-##
-#     import pybullet_envs  # for python-bullet-gym
-#     dir(pybullet_envs)
-#     args.env = decorate_env(gym.make('MinitaurBulletEnv-v0'), if_print=True)
-#     args.break_step = int(4e6 * 4)  # (2e6) 4e6
-#     args.reward_scale = 2 ** 5  # (-2) 0 ~ 16 (20)
-#     args.batch_size = (2 ** 8)
-#     args.net_dim = int(2 ** 8)
-#     args.max_step = 2 ** 11
-#     args.max_memo = 2 ** 20
-#     args.eval_times2 = 3  # for Recorder
-#     args.eval_times2 = 9  # for Recorder
-#     args.show_gap = 2 ** 9  # for Recorder
-#     args.init_for_training()
-#     train_agent_mp(args)  # train_agent(args)
-#     exit()
-#
-#     args.env = decorate_env(gym.make('BipedalWalkerHardcore-v3'), if_print=True)  # 2020-08-24 plan
-#     args.reward_scale = 2 ** 0  # (-200) -150 ~ 300 (334)
-#     args.break_step = int(4e6 * 8)  # (2e6) 4e6
-#     args.net_dim = int(2 ** 8)  # int(2 ** 8.5) #
-#     args.max_memo = int(2 ** 21)
-#     args.batch_size = int(2 ** 8)
-#     args.eval_times2 = 2 ** 5  # for Recorder
-#     args.show_gap = 2 ** 8  # for Recorder
-#     args.init_for_training()
-#     train_agent_mp(args)  # train_offline_policy(args)
-#     exit()
-#
-#
-# def train__continuous_action__on_policy():
-#     import AgentZoo as Zoo
-#     args = Arguments(rl_agent=None, env=None, gpu_id=None)
-#     args.rl_agent = [
-#         Zoo.AgentPPO,  # 2018. PPO2 + GAE, slow but quite stable, especially in high-dim
-#         Zoo.AgentInterPPO,  # 2019. Integrated Network, useful in pixel-level task (state2D)
-#     ][0]
-#
-#     import gym  # gym of OpenAI is not necessary for ElegantRL (even RL)
-#     gym.logger.set_level(40)  # Block warning: 'WARN: Box bound precision lowered by casting to float32'
-#     args.if_break_early = True  # break training if reach the target reward (total return of an episode)
-#     args.if_remove_history = True  # delete the historical directory
-#
-#     args.net_dim = 2 ** 8
-#     args.max_memo = 2 ** 12
-#     args.batch_size = 2 ** 9
-#     args.repeat_times = 2 ** 4
-#     args.reward_scale = 2 ** 0  # unimportant hyper-parameter in PPO which do normalization on Q value
-#     args.gamma = 0.99  # important hyper-parameter, related to episode steps
-#
-#     import pybullet_envs  # for python-bullet-gym
-#     dir(pybullet_envs)
-#     args.env = decorate_env(gym.make('MinitaurBulletEnv-v0'), if_print=True)
-#     args.break_step = int(1e6 * 8)  # (4e5) 1e6 (8e6)
-#     args.reward_scale = 2 ** 4  # (-2) 0 ~ 16 (PPO 34)
-#     args.gamma = 0.95  # important hyper-parameter, related to episode steps
-#     args.net_dim = 2 ** 8
-#     args.max_memo = 2 ** 11
-#     args.batch_size = 2 ** 9
-#     args.repeat_times = 2 ** 4
-#     args.init_for_training()
-#     train_agent_mp(args)
-#     exit()
-#
-#     # args.env = decorate_env(gym.make('BipedalWalkerHardcore-v3'), if_print=True)  # 2020-08-24 plan
-#     # on-policy (like PPO) is BAD at a environment with so many random factors (like BipedalWalkerHardcore).
-#     # exit()
-#
-#     args.env = fix_car_racing_env(gym.make('CarRacing-v0'))
-#     # on-policy (like PPO) is GOOD at learning on a environment with less random factors (like 'CarRacing-v0').
-#     # see 'train__car_racing__pixel_level_state2d()'
-#
-#
-# def run__fin_rl():
-#     env = FinanceMultiStockEnv()  # 2020-12-24
-#
-#     from AgentZoo import AgentPPO
-#
-#     args = Arguments(rl_agent=AgentPPO, env=env)
-#     args.eval_times1 = 1
-#     args.eval_times2 = 1
-#     args.rollout_num = 4
-#     args.if_break_early = False
-#
-#     args.reward_scale = 2 ** 0  # (0) 1.1 ~ 15 (19)
-#     args.break_step = int(5e6 * 4)  # 5e6 (15e6) UsedTime: 4,000s (12,000s)
-#     args.net_dim = 2 ** 8
-#     args.max_step = 1699
-#     args.max_memo = 1699 * 16
-#     args.batch_size = 2 ** 10
-#     args.repeat_times = 2 ** 4
-#     args.init_for_training()
-#     train_agent_mp(args)  # train_agent(args)
-#     exit()
-#
-#     # from AgentZoo import AgentModSAC
-#     #
-#     # args = Arguments(rl_agent=AgentModSAC, env=env)  # much slower than on-policy trajectory
-#     # args.eval_times1 = 1
-#     # args.eval_times2 = 2
-#     #
-#     # args.break_step = 2 ** 22  # UsedTime:
-#     # args.net_dim = 2 ** 7
-#     # args.max_memo = 2 ** 18
-#     # args.batch_size = 2 ** 8
-#     # args.init_for_training()
-#     # train_agent_mp(args)  # train_agent(args)
-#
-#
-# def train__car_racing__pixel_level_state2d():
-#     from AgentZoo import AgentPPO
-#
-#     '''DEMO 4: Fix gym Box2D env CarRacing-v0 (pixel-level 2D-state, continuous action) using PPO'''
-#     import gym  # gym of OpenAI is not necessary for ElegantRL (even RL)
-#     gym.logger.set_level(40)  # Block warning: 'WARN: Box bound precision lowered by casting to float32'
-#     env = gym.make('CarRacing-v0')
-#     env = fix_car_racing_env(env)
-#
-#     args = Arguments(rl_agent=AgentPPO, env=env, gpu_id=None)
-#     args.if_break_early = True
-#     args.eval_times2 = 1
-#     args.eval_times2 = 3  # CarRacing Env is so slow. The GPU-util is low while training CarRacing.
-#     args.rollout_num = 4  # (num, step, time) (8, 1e5, 1360) (4, 1e4, 1860)
-#     args.random_seed += 1943
-#
-#     args.break_step = int(5e5 * 4)  # (1e5) 2e5 4e5 (8e5) used time (7,000s) 10ks 30ks (60ks)
-#     # Sometimes bad luck (5%), it reach 300 score in 5e5 steps and don't increase.
-#     # You just need to change the random seed and retrain.
-#     args.reward_scale = 2 ** -2  # (-1) 50 ~ 700 ~ 900 (1001)
-#     args.max_memo = 2 ** 11
-#     args.batch_size = 2 ** 7
-#     args.repeat_times = 2 ** 4
-#     args.net_dim = 2 ** 7
-#     args.max_step = 2 ** 10
-#     args.show_gap = 2 ** 8  # for Recorder
-#     args.init_for_training()
-#     train_agent_mp(args)  # train_agent(args)
-#     exit()
-
-
-if __name__ == '__main__':
-    demo1_discrete_action_space()
-    # demo2_continuous_action_space_off_policy()
-    # demo2_continuous_action_space_on_policy()
-    # demo3_custom_env_fin_rl()
-    # demo4_bullet_mujoco_off_policy()
-    # demo4_bullet_mujoco_on_policy()
+    mv_stat = [n / term for n in mv_stat]
+    wv_stat = [n / term for n in wv_stat]
+    fs_stat = [n / term for n in fs_stat]
+    adab_stat = [n / term for n in adab_stat]
+    eprl_stat = [n / term for n in eprl_stat]
+    ibrl_stat = [n / term for n in ibrl_stat]
+    time_costs = [n / term for n in time_costs]
+    fs_size /= term
+    eprl_size /= term
+    ibrl_size /= term
+    avg_full_test_accu /= term
+    avg_part_test_accu /= term
+    U.outputs(['mv', 'wv', 'fs', 'adab', 'eprl', 'ibrl'],
+              [mv_stat, wv_stat, fs_stat, adab_stat, eprl_stat, ibrl_stat])
+    print('time costs: C, E, V, FS, Ada, EPRL, IBRL\n       '
+          + U.formatFloats(time_costs, 2))
+    print('FS size: %.5f, EPRL size: %.5f, IBRL size: %.5f'
+          % (fs_size, eprl_size, ibrl_size))
+    print('full test avg accu: %.5f, part test avg accu: %.5f'
+          % (avg_full_test_accu, avg_part_test_accu))
