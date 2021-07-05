@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="zitong@10.0.0.65:22 password" remoteFilesAllowedToDisappearOnAutoupload="false">
+    <serverData>
+      <paths name="zitong@10.0.0.65:22 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/zitong/ensemble" local="$PROJECT_DIR$" />
+            <mapping local="" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="zitong@10.0.0.65:22 password (1)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/zitong/ensemble" local="$PROJECT_DIR$" />
+            <mapping local="" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="zitong@10.0.0.65:22 password (2)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/zitong/ensemble" local="$PROJECT_DIR$" />
+            <mapping local="" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

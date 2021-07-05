@@ -19,13 +19,12 @@ import time
 from config import *
 import sys
 from collections import Counter
-import selection
+
 from importlib import import_module
 from sklearn.model_selection import KFold
 
 
 class Classifier:
-
     def __init__(self, classifier_type='', clf=None, C=1, **clf_kwarg):
         if clf is not None:
             self.clf = clf
@@ -35,11 +34,11 @@ class Classifier:
                                               max_depth=8)
         # elif classifier_type == 'rf':
         #     self.clf = RandomForestClassifier(random_state=clf_kwarg['random_state'])
-        # elif classifier_type == 'svm':
-        #     self.clf = SVC(random_state=clf_kwarg['random_state'])
+        elif classifier_type == 'svm':
+            self.clf = SVC(random_state=clf_kwarg['random_state'])
         elif classifier_type == 'mlp':
             self.clf = MLPClassifier(random_state=clf_kwarg['random_state'], 
-                                     hidden_layer_sizes=(8,))
+                                     hidden_layer_sizes=(8,), max_iter=3000)
         elif classifier_type == 'knn':
             self.clf = KNeighborsClassifier(algorithm='brute')
         elif classifier_type == 'nb':
@@ -65,8 +64,7 @@ class Classifier:
 
 
 class Ensemble:
-
-    def __init__(self, size, types, features, label_map, persistence='', **clf_kwarg):
+    def __init__(self, size, types, features, label_map, persistence='', classifiers=None, **clf_kwarg):
         if len(features) != size:
             raise ValueError('length of feature does not match number of classifiers')
         self.size = size
@@ -76,6 +74,8 @@ class Ensemble:
         self.classifiers = []
         if os.path.isdir(persistence):
             self.loadClf(persistence, types)
+        elif classifiers is not None:
+            self.classifiers = classifiers
         else:
             for i in range(size):
                 self.clf_types.append(types[i % len(types)])
@@ -105,6 +105,26 @@ class Ensemble:
         self.features.remove(self.features[clf])
         self.clf_types.remove(self.clf_types[clf])
 
+    def selectBestClf(self, dataSet, rank=1, coefficient=1.5):
+        ret = []
+        for i in range(self.size):
+            X = dataSet.iloc[:, self.features[i]]
+            res = self.classifiers[i].result(X)
+            ret.append(res)
+        # ret M*N M:# of sample, N:# of classifier
+        ret = np.transpose(ret)
+        Y = dataSet.values[:, -1:]
+        predict_result = np.hstack((ret, Y))
+        infoGain = U.calInfoGain(predict_result)
+        # print(pd.DataFrame(infoGain))
+        accuracy = self.accuracy(dataSet)
+        # print(pd.DataFrame(accuracy))
+        obj = coefficient * infoGain + 1 * np.array(accuracy)
+        # print(pd.DataFrame(obj))
+        # print(infoGain, accuracy)
+        sorted_index = np.argsort(obj)
+        # print('acc', accuracy[sorted_index[-rank]])
+        return sorted_index[-rank], accuracy[sorted_index[-rank]]
 
     def accuracy(self, data):
         ret = []
@@ -114,41 +134,75 @@ class Ensemble:
             test_y = data.iloc[:, -1]
             s = self.classifiers[i].accuracy(test_X, test_y)
             ret.append(s)
-        return ret
+        return np.array(ret)
 
-    def randomSelect(self, data, N):
-        sample = np.random.randint(0, self.size, N)
-        test_X = data.iloc[:, :-1]
-        test_y = data.iloc[:, -1].values
-        result = []
-        for s in range(len(data)):
-            result_s = []
-            for t in sample:
-                temp = self.label_map[self.classifiers[t].result(test_X.iloc[s:s + 1, self.features[t]])[0]]
-                result_s.append(temp)
-            result.append(result_s)
-        vote = Counter()
-        major_vote = []
-        # print(result)
-        for s in result:
-            for i in s:
-                vote[i] += 1
+    def topKMajorityVote(self, train_data, test_data, k):
+        acc = self.accuracy(train_data)
+        rank = np.argsort(acc)[::-1]
+        conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
+        for i in range(test_data.shape[0]):
+            real = test_data.iloc[i, -1]
+            vote = Counter()
+            for j in range(k):
+                feature = self.features[rank[j]]
+                X = test_data.iloc[i, feature].values.reshape(1, -1)
+                p = self.classifiers[rank[j]].result(X)[0]
+                vote[p] += 1
             pred = vote.most_common()[0][0]
-            major_vote.append(pred)
-        temp = 0
-        # print('mv',major_vote)
-        # print('testy',test_y)
-        # print( )
-        for i in range(len(data)):
-            # print('i',i, major_vote[i])
-            # print(self.label_map[test_y[i]])
-            if major_vote[i] == self.label_map[test_y[i]]:
-                temp += 1
-        return temp / len(data)
+            conf_matrix[self.label_map[real], self.label_map[pred]] += 1
+        return conf_matrix
 
+    def topKWeightedVote(self, data, k):
+        acc = self.accuracy(data)
+        rank = np.argsort(acc)[::-1]
+        conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
+        for i in range(data.shape[0]):
+            real = data.iloc[i, -1]
+            vote = Counter()
+            for j in range(k):
+                feature = self.features[rank[j]]
+                X = data.iloc[i, feature].values.reshape(1, -1)
+                prob = self.classifiers[rank[j]].resProb(X)[0]
+                for c, p in zip(self.classifiers[rank[j]].classes(), prob):
+                    vote[c] += p
+            pred = vote.most_common()[0][0]
+            conf_matrix[self.label_map[real], self.label_map[pred]] += 1
+        return conf_matrix
+
+    def randomSelectMajorityVote(self, data, N):
+        sample = np.random.choice(a=self.size, size=N, replace=False, p=None)
+        conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
+        for i in range(data.shape[0]):
+            real = data.iloc[i, -1]
+            vote = Counter()
+            for j in range(N):
+                feature = self.features[sample[j]]
+                X = data.iloc[i, feature].values.reshape(1, -1)
+                p = self.classifiers[sample[j]].result(X)[0]
+                vote[p] += 1
+            pred = vote.most_common()[0][0]
+            conf_matrix[self.label_map[real], self.label_map[pred]] += 1
+        return conf_matrix
+
+    def randomSelectWeightedVote(self, data, N):
+        sample = np.random.choice(a=self.size, size=N, replace=False, p=None)
+        conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
+        for i in range(data.shape[0]):
+            real = data.iloc[i, -1]
+            vote = Counter()
+            for j in range(N):
+                feature = self.features[sample[j]]
+                X = data.iloc[i, feature].values.reshape(1, -1)
+                prob = self.classifiers[sample[j]].resProb(X)[0]
+                for c, p in zip(self.classifiers[sample[j]].classes(), prob):
+                    vote[c] += p
+            pred = vote.most_common()[0][0]
+            conf_matrix[self.label_map[real], self.label_map[pred]] += 1
+        return conf_matrix
     # return the matrix of result
     # each row for an instance
     # each column for a classifier
+
     def results(self, data):
         ret = []
         for i in range(self.size):
