@@ -1,6 +1,7 @@
 import os
 import pandas as pd
-
+import numpy as np
+from config import Classification, Regression
 
 '''
 split dataset
@@ -89,7 +90,7 @@ def abalone():
     # cast categorical to numerical
     cateColumn([data], 'sex', '?')
     data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -146,7 +147,7 @@ def audiology():
     for col in cate_columns:
         cateColumn([data], col, '?')
     data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -167,7 +168,7 @@ def avila():
     '''
     data = pd.read_csv(data_dir + 'avila/avila.csv')
     data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -202,7 +203,7 @@ def breast_cancer():
     col_size = data.shape[1]
     data.insert(col_size - 1, 'Class', data.pop('Class'))
     data = data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -220,7 +221,7 @@ def breast_w():
     # fill missing value with the average of column
     for col in data.columns:
         fillEmpty([data], col, '?', False)
-    return data
+    return data, Classification
 
 
 '''
@@ -237,7 +238,7 @@ def cmc():
     for col in cate_columns:
         cateColumn([data], col, '?')
     data = data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -258,7 +259,7 @@ def credit_card():
     '''
     data = pd.read_csv(data_dir + 'credit_card/credit_card.csv')
     data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -283,7 +284,7 @@ def dematology():
     data.columns = columns
     data = data.infer_objects()
     fillEmpty([data], 'Age', '?', True)
-    return data
+    return data, Classification
 
 
 '''
@@ -296,7 +297,7 @@ def ecoli():
     data.columns = columns
     data.drop('Sequence Name', axis = 1, inplace = True)
     data = data.infer_objects()
-    return data
+    return data, Classification
 
 '''
 (214, 10)
@@ -308,7 +309,7 @@ def glass():
     data.columns = columns
     data.drop('Id', axis = 1, inplace = True)
     data = data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -332,7 +333,7 @@ def heart():
     for col in cate_columns:
         cateColumn([data], col, '?')
     data.infer_objects()
-    return data
+    return data, Classification
 
 
 '''
@@ -358,7 +359,7 @@ def hepatitis():
     # move class to last column
     col_size = data.shape[1]
     data.insert(col_size - 1, 'Class', data.pop('Class'))
-    return data
+    return data, Classification
 
 
 '''
@@ -370,7 +371,7 @@ def human_activity():
     test = pd.read_csv('data/human-activity/test.csv')
     data = pd.concat([train, test], ignore_index = True)
     data.drop('subject', axis = 1, inplace = True)
-    return data
+    return data, Classification
 
 
 '''
@@ -381,7 +382,7 @@ def iris():
     iris = pd.read_csv(data_dir + 'iris/iris.csv', header=None)
     bezd = pd.read_csv(data_dir + 'iris/bezdekIris.csv', header=None)
     data = pd.concat([iris, bezd], ignore_index = True)
-    return data
+    return data, Classification
 
 
 '''
@@ -405,8 +406,59 @@ def lymphography():
     # move class to last column
     col_size = data.shape[1]
     data.insert(col_size - 1, 'class', data.pop('class'))
-    return data
+    return data, Classification
 
+
+def bike():
+    train = pd.read_csv('data/bike-sharing-demand/train.csv')
+    test = pd.read_csv('data/bike-sharing-demand/test.csv')
+    #df = pd.concat([train, test], ignore_index=True)
+    df = train
+    min_label = min(df.iloc[:, -1])
+    max_label = max(df.iloc[:, -1])
+    date = pd.DatetimeIndex(df['datetime'])
+    df['year'], df['month'], df['hour'], df['dayofweek'] = \
+        date.year, date.month, date.hour, date.dayofweek
+    df['year_season'] = df['year'] + df['season'] / 10
+    df['hour_workingday_casual'] = df[['hour', 'workingday']].apply(
+        lambda x: int(10 <= x['hour'] <= 19), axis=1)
+    df['hour_workingday_registered'] = df[['hour', 'workingday']].apply(
+        lambda x: int(
+            (x['workingday'] == 1 and (x['hour'] == 8 or 17 <= x['hour'] <= 18))
+            or (x['workingday'] == 0 and 10 <= x['hour'] <= 19)), axis=1)
+    features = ['season', 'holiday', 'workingday', 'weather',
+                'temp', 'atemp', 'humidity', 'windspeed', 'year', 'hour',
+                'dayofweek']
+    count = df['count']
+    df = df.loc[:, features]
+    # df['log_count'] = np.log(df['count'])
+    df['normal_count'] = (count - min_label) * 20 / (max_label - min_label)
+    print(df.shape)
+    return df.loc[:,:], Regression
+
+def powergrid():
+    npy_path = 'data/np_dir/290.npy'
+    x = np.load(npy_path)[33,:,:].transpose((1,0)).astype(np.float32)
+    print(x.shape)
+    from sklearn.preprocessing import MinMaxScaler
+    scaler = MinMaxScaler(feature_range=(-1, 1))
+    x = scaler.fit_transform(x)
+    print(x.shape)
+    inout_seq = []
+    L = len(x)
+    tw=8
+    tc=4
+    for i in range(L - tw-tc):
+        #train_seq = x[i:i + tw]
+        seq = []
+        for k in range(tw):
+            for j in range(7):
+                seq.append(x[k][j])
+        seq.append(x[i+tw+tc][0])
+
+        #train_label = x[i + tw:i + tw + 1]  # 预测time_step之后的第一个数值
+        inout_seq.append(seq)  # inout_seq内的数据不断更新，但是总量只有tw+1个
+    return pd.DataFrame(inout_seq), Regression
 
 def read(dataset):
     data_map = {
@@ -424,7 +476,9 @@ def read(dataset):
         'hepa': hepatitis,
         'ha': human_activity,
         'iris': iris,
-        'lymph': lymphography
+        'lymph': lymphography,
+        'bike': bike,
+        'powergrid': powergrid
     }
     return data_map[dataset]()
 

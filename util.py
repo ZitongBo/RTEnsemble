@@ -39,7 +39,6 @@ def outputs(algs, measurements):
         print('{:>4}: {:.4f}, {:.4f}, {:.4f}, {:.4f}'.format(a, m[0], m[1], m[2], m[3]))
     print()
 
-
 def formatFloats(nums, digits):
     res = ''
     for n in nums:
@@ -115,3 +114,15 @@ def calcShannonEnt(dataSet):
         prob = float(labelCounts[key])/numEntries      # 选择该标签的概率
         shannonEnt -= prob * math.log(prob, 2)                 # 利用公式计算
     return shannonEnt                                # 返回经验熵
+
+
+# 处理预测值
+def normal(data, max_value=10, task=1):
+    if task == 1:
+        return data
+    if data < 0:
+        return 0
+    elif data > max_value - 1:
+        return max_value - 1
+    else:
+        return round(data)

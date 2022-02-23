@@ -157,16 +157,18 @@ class Environment():
             return ret
 
     # return the confusion matrix of a given model
-    def evaluation(self, model, in_set, deter=True, verbose=False):
+    def evaluation(self, model, in_set, ddl=20, deter=True, verbose=False):
         conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
         if deter:
             avg_clf = 0
             for in_row in range(len(self.res_set[in_set])):
+                ddl = 2
                 actions = []
                 if verbose:
                     print('\ntest case %d' % (in_row))
                 state = self.initState()
                 while state is not None:
+
                     action = model.policy(state)
                     actions.append(str(action))
 
@@ -177,6 +179,7 @@ class Environment():
                         pred = state.evaluation()
                         real = self.real_set[in_set].iloc[in_row]
                         conf_matrix[self.label_map[real], self.label_map[pred]] += 1
+                        # print(conf_matrix)
                     state_p, reward = self.step(state, action, in_set, in_row)
                     state = state_p
                 avg_clf += len(actions) - 1

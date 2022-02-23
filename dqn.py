@@ -194,7 +194,7 @@ def learn(env, in_set, num_training, learning_rate, epsilon, discount_factor, ra
             # training log
             # print('\nfinished epoch: %d:\nexploration: %.3f, sampling: %.3f\nlosses: %s' 
             #       % (i, exploration, sample_portion, U.formatFloats(losses, 3)))
-            rl_cmatrix, avg_clf = env.evaluation(model, 1, verbose=False)
+            rl_cmatrix, avg_clf = env.evaluation(model, 1, 20, verbose=False)
             rl_res = U.computeConfMatrix(rl_cmatrix)
             # U.outputs(['rl'], [rl_res])
             losses.clear()
@@ -208,7 +208,7 @@ def learn(env, in_set, num_training, learning_rate, epsilon, discount_factor, ra
         # dynamic exploration rate
         exploration *= fading_rate
         exploration = max(exploration, 0.1) # keep at least 0.1 exploration rate
-    rl_cmatrix, _ = env.evaluation(res_model, 0, verbose=False)
+    rl_cmatrix, _ = env.evaluation(res_model, 0, 20, verbose=False)
     rl_res = U.computeConfMatrix(rl_cmatrix)
     U.outputs(['max0'], [rl_res])
     #rl_cmatrix, _ = env.evaluation(res_model, 3, verbose=False)

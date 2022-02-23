@@ -21,7 +21,9 @@ def train(dataset,
           classifier,
           algorithm,
           random_state,
+          ddl,
           coefficient,
+          one_result=False,
           num_clf=100,
           feature_type=3,
           num_training=10000,
@@ -35,22 +37,27 @@ def train(dataset,
     np.random.seed(random_state)
 
     start_time = time.time()
-    data = rdr.read(dataset)
+    data, task = rdr.read(dataset)
     time_cost = time.time() - start_time
     print('reading', dataset, 'dataset takes %.3f sec' % (time_cost))
     print('data shape:', data.shape)
     # shuffle dataset
     # data = data.sample(frac=1, random_state=random_state).reset_index(drop=True)
-
     num_feature = data.shape[1] - 1
-    label_map = dict()
-    # label_map[None] = 'N'
-    for l in data.iloc[:, -1]:
-        if l not in label_map:
-            label_map[l] = len(label_map)
+    if task == Regression:
+        num_children = 10
+        label_map = dict()
+        for i in range(num_children):
+            label_map[i] = i
+    else:
+        label_map = dict()
+        # label_map[None] = 'N'
+        for l in data.iloc[:, -1]:
+            if l not in label_map:
+                label_map[l] = len(label_map)
     print('number of labels: %d' % (len(label_map)))
-    print('adab classifier type', classifier)
-
+    print('classifier type', classifier)
+    print(feature_type)
     clf_types = classifier
     if clf_types == ['dt']:
         clf_type = 1
@@ -95,6 +102,8 @@ def train(dataset,
     avg_full_test_accu = 0.0
     avg_part_test_accu = 0.0
     stat = np.zeros((len(algorithm), 4))
+    mean_MSE = np.zeros((len(algorithm)))
+    mean_MAE = np.zeros((len(algorithm)))
     term = 10
     kf = KFold(n_splits=term)
     for i, (train_idx, test_idx) in enumerate(kf.split(data)):
@@ -113,25 +122,25 @@ def train(dataset,
         persistence = 'models/clfs/d{}n{:d}c{:d}f{:d}r{:d}/i{:d}full/'.format(
             dataset, num_clf, clf_type, feature_type, random_state, i)
         if LOAD_CLF:
-            full_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+            full_ensemble = Ensemble(num_clf, clf_types, features, label_map, task,
                                      persistence=persistence)
         else:
-            full_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+            full_ensemble = Ensemble(num_clf, clf_types, features, label_map, task,
                                      random_state=random_state)
             full_ensemble.train(train)
-            full_ensemble.saveClf(persistence)
+            # full_ensemble.saveClf(persistence)
 
         # part ensemble
         persistence = 'models/clfs/d{}n{:d}c{:d}f{:d}r{:d}/i{:d}part/'.format(
             dataset, num_clf, clf_type, feature_type, random_state, i)
         if LOAD_CLF:
-            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,  task,
                                      persistence=persistence)
         else:
-            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,
+            part_ensemble = Ensemble(num_clf, clf_types, features, label_map,  task,
                                      random_state=random_state)
             part_ensemble.train(train_clf)
-            part_ensemble.saveClf(persistence)
+            # part_ensemble.saveClf(persistence)
             # # AdaBoost
             # start_time = time.time()
             # adab = AdaBoost(num_clf, random_state)
@@ -154,15 +163,15 @@ def train(dataset,
             time_cost = time.time() - start_time
             # out_time.append(time_cost)
             # time_costs[4] += time_cost
-            print('AdaBoost takes %.3f sec' % (time_cost))
+            # print('AdaBoost takes %.3f sec' % (time_cost))
         time_cost = time.time() - start_time
         ensemble_start_time = time.time()
-        noTree = 10
-        ddl = 40
+        noTree = 20
+        print('ddl', ddl)
         coef = coefficient
         trees = []
         for t in range(noTree):
-            tree1 = selection.EnsembleTree(full_ensemble, train, rank=t + 1, coefficient=coef)
+            tree1 = selection.EnsembleTree(full_ensemble, train,  rank=t + 1, coefficient=coef, one_result=one_result,)
             trees.append(tree1)
         forest = selection.EnsembleForest(trees, full_ensemble.label_map)
         print(' full_ensemble, train, coef=', coef)
@@ -177,56 +186,77 @@ def train(dataset,
         start_time = time.time()
         real_set = [train_ens.iloc[:, -1], test.iloc[:, -1]]
         res_set = [part_ensemble.results(train_ens), part_ensemble.results(test)]
-        prob_set = [part_ensemble.resProb(train_ens), part_ensemble.resProb(test)]
+
 
         time_cost = time.time() - start_time
         time_costs[1] += time_cost
         print('creating environment takes %.3f sec' % (time_cost))
 
         # voting techniques
-        for a in range(len(algorithm)):
-            alg = algorithm[a]
-            start_time = time.time()
-            confidence_matrix = np.zeros((len(label_map), len(label_map)))
-            # majority vote
-            if alg == 'mv':
-                confidence_matrix = full_ensemble.majorityVote(test)
-            elif alg == 'wv':
-                confidence_matrix = full_ensemble.weightedVote(test)
-            elif alg == 'rs':
-                confidence_matrix = full_ensemble.randomSelectMajorityVote(test, ddl)
-            elif alg == 'ta':
-                confidence_matrix = full_ensemble.topKMajorityVote(train, test, ddl)
-            elif alg == 'efmv':
-                confidence_matrix = forest.majorityVote(test, ddl)
-            elif alg == 'efwv':
-                confidence_matrix = forest.weightedVote(test, ddl)
-            elif alg == "dqn":
-                model_folder = 'models/ibrls/d{}n{:d}c{:d}f{:d}r{:d}/'.format(
-                    dataset, num_clf, clf_type, feature_type, random_state)
-                if not LOAD_IBRL and not os.path.isdir(model_folder):
-                    os.makedirs(model_folder)
-                model_path = '{}/i{:d}.ibrl'.format(model_folder, i)
-                # print(model_path)
-                if LOAD_IBRL:
-                    model.load(model_path)
-                else:
-                    learn = get_learn_function(alg)
-                    env = Environment(num_clf, real_set, res_set, prob_set, label_map, ddl)
-                    model = learn(env, 0, num_training, learning_rate, epsilon,
-                                  discount_factor, random_state, **network_kwargs)
-                    model.save(model_path)
-                confidence_matrix, avg_clf = env.evaluation(model, 1, verbose=False)
-                ibrl_size += avg_clf
-            res = U.computeConfMatrix(confidence_matrix)
-            for s in range(4):
-                stat[a][s] += res[s] / term
-            out_res.append(res)
-            time_cost = time.time() - start_time
-            out_time.append(time_cost)
-            time_costs[2] += time_cost
-            print(alg, 'takes %.3f sec' % (time_cost))
+        if task == Classification:
+            for a in range(len(algorithm)):
+                alg = algorithm[a]
+                start_time = time.time()
+                confidence_matrix = np.zeros((len(label_map), len(label_map)))
 
+                # majority vote
+                if alg == 'mv':
+                    confidence_matrix = full_ensemble.majorityVote(test)
+                elif alg == 'wv':
+                    confidence_matrix = full_ensemble.weightedVote(test)
+                elif alg == 'rs':
+                    confidence_matrix = full_ensemble.randomSelectMajorityVote(test, ddl)
+                elif alg == 'ta':
+                    confidence_matrix = full_ensemble.topKMajorityVote(train, test, ddl)
+                elif alg == 'efmv':
+                    confidence_matrix = forest.majorityVote(test, ddl)
+                elif alg == 'efwv':
+                    confidence_matrix = forest.weightedVote(test, ddl)
+                elif alg == "dqn":
+                    prob_set = [part_ensemble.resProb(train_ens), part_ensemble.resProb(test)]
+                    model_folder = 'models/ibrls/d{}n{:d}c{:d}f{:d}r{:d}/'.format(
+                        dataset, num_clf, clf_type, feature_type, random_state)
+                    if not LOAD_IBRL and not os.path.isdir(model_folder):
+                        os.makedirs(model_folder)
+                    model_path = '{}/i{:d}.ibrl'.format(model_folder, i)
+                    # print(model_path)
+                    if LOAD_IBRL:
+                        model.load(model_path)
+                    else:
+                        learn = get_learn_function(alg)
+                        env = Environment(num_clf, real_set, res_set, prob_set, label_map, ddl)
+                        model = learn(env, 0, num_training, learning_rate, epsilon,
+                                      discount_factor, random_state, **network_kwargs)
+                        model.save(model_path)
+                    confidence_matrix, avg_clf = env.evaluation(model, 1, ddl, verbose=False)
+                    ibrl_size += avg_clf
+                print(alg, 'take', time.time() - start_time, 's')
+                res = U.computeConfMatrix(confidence_matrix)
+                for s in range(4):
+                    stat[a][s] += res[s] / term
+                out_res.append(res)
+                time_cost = time.time() - start_time
+                out_time.append(time_cost)
+                time_costs[2] += time_cost
+                print(alg, 'takes %.3f sec' % (time_cost))
+        else:
+            for a in range(len(algorithm)):
+                alg = algorithm[a]
+                start_time = time.time()
+                MSE = 0
+                MAE = 0
+                if alg == 'mv':
+                    MSE,MAE = full_ensemble.MSE(test)
+                elif alg == 'rs':
+                    # confidence_matrix = full_ensemble.randomSelectMajorityVote(test, ddl)
+                    MSE, MAE = full_ensemble.rsMSE(train, test, ddl)
+                elif alg == 'ta':
+                    MSE,MAE = full_ensemble.topKMSE(train, test, ddl)
+                elif alg == 'efmv':
+                    MSE, MAE = forest.MSE(test, ddl)
+                print(alg, 'MSE=', MSE)
+                mean_MSE[a] += MSE / term
+                mean_MAE[a] += MAE /term
         # FS
         # start_time = time.time()
         # fs_model = fs.train(num_clf, real_set[0], res_set[0])
@@ -324,7 +354,10 @@ def train(dataset,
           % (fs_size, eprl_size, ibrl_size))
     print('full test avg accu: %.5f, part test avg accu: %.5f'
           % (avg_full_test_accu, avg_part_test_accu))
-
+    if task == Regression:
+        print('algorithm   MSE ddl',ddl)
+        for i in range(len(algorithm)):
+            print(algorithm[i],mean_MSE[i], mean_MAE[i])
 
 def get_learn_function(alg):
     # alg_module = import_module('.'.join(['src', alg]))

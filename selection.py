@@ -1,44 +1,36 @@
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.datasets import load_digits
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import mean_absolute_error
-import sklearn
-from sklearn.ensemble import RandomForestClassifier
-from sklearn import datasets
-from sklearn import linear_model
 from reader import *
 import numpy as np
 import math
+import time
 from copy import deepcopy
 from classifier import Classifier
 from collections import Counter
+import util as U
 
 
 class EnsembleTree:
-    def __init__(self, ensemble, val_set, rank, coefficient):
+    def __init__(self, ensemble, val_set, rank, coefficient, one_result=False, task=Classification):
         self.label_map = ensemble.label_map
         self.coefficient = coefficient
         self.nodeNum = 1
-        self.clf_types = []
-        best_clf_index, _ = ensemble.selectBestClf(val_set, rank, self.coefficient)
-        root_clf = ensemble.classifiers[best_clf_index]
-        root_feature = ensemble.features[best_clf_index]
+        self.task = task
+        self.one_result = one_result
+        best_learner_index, _ = ensemble.selectBestLearner(val_set, rank, self.coefficient)
+        root_learner = ensemble.base_learners[best_learner_index]
+        root_feature = ensemble.features[best_learner_index]
         children = []
         for i in range(len(self.label_map)):
             children.append(None)
-        self.root = EnsembleTreeNode(root_clf, children, root_feature)
+        self.root = EnsembleTreeNode(root_learner, children, root_feature)
 
         curr = self.root
         ensemble_root = deepcopy(ensemble)
-        ensemble_root.remove(best_clf_index)
-        print(best_clf_index, len(ensemble))
+        ensemble_root.remove(best_learner_index)
         # splitData = np.zeros((len(self.label_map), 1, len(val_set.columns)))
         data_dict = dict()
         for d in range(0, len(val_set)):
-            label = self.label_map[curr.clf.result(val_set.iloc[d:d+1, root_feature])[0]]
+            # print(curr.predictLabel(val_set.iloc[d, :]), d, self.label_map)
+            label = self.label_map[curr.predictLabel(val_set.iloc[d, :])]
             if label not in data_dict:
                 data_dict[label] = val_set.iloc[d:d+1, :]
             else:
@@ -48,47 +40,50 @@ class EnsembleTree:
 
         for i in range(len(self.label_map)):
             if i in data_dict:
-                best_clf = self.construct_tree_node(data_dict[i], ensemble_root)
-                children.append(best_clf)
+                best_learner = self.constructTreeNode(data_dict[i], ensemble_root)
+                children.append(best_learner)
             else:
                 children.append(None)
-
         curr.children = children
 
-    def construct_tree_node(self, dataSet, ensemble, ):
-        best_clf_index, obj = ensemble.selectBestClf(dataSet, 1, self.coefficient)
-        if obj < 0.52:
+    def constructTreeNode(self, data_set, ensemble, ):
+        best_learner_index, criterion = ensemble.selectBestLearner(data_set, 1, self.coefficient)
+        if criterion < 0.52:
             return None
         self.nodeNum += 1
-        # print('obj',obj, 'index',best_clf_index)
-        # print('ensemble size:', ensemble.size, ' data', len(dataSet))
+        # print('obj',obj, 'index',best_learner_index)
+        # print('ensemble size:', ensemble.size, ' data', len(data_set))
         # print()
-        root_clf = ensemble.classifiers[best_clf_index]
-        root_feature = ensemble.features[best_clf_index]
+        root_learner = ensemble.base_learners[best_learner_index]
+        root_feature = ensemble.features[best_learner_index]
         self.nodeNum += 1
         children = []
         for i in range(len(self.label_map)):
             children.append(None)
-        treeNode = EnsembleTreeNode(root_clf, children, root_feature)
+        treeNode = EnsembleTreeNode(root_learner, children, root_feature)
 
-        if obj > 0.9:
+        if criterion > 0.9:
             return treeNode
         ensemble_root = deepcopy(ensemble)
-        ensemble_root.remove(best_clf_index)
+        ensemble_root.remove(best_learner_index)
         # splitData = np.zeros((len(self.label_map), 1, len(val_set.columns)))
         data_dict = dict()
-        for d in range(0, len(dataSet)):
-            label = self.label_map[root_clf.result(dataSet.iloc[d, root_feature].values.reshape(1, -1))[0]]
+        for d in range(0, len(data_set)):
+            label = self.label_map[treeNode.predictLabel(data_set.iloc[d, :])]
             if label not in data_dict:
-                data_dict[label] = dataSet.iloc[d:d + 1, :]
+                data_dict[label] = data_set.iloc[d:d + 1, :]
             else:
-                data_dict[label] = data_dict[label].append(dataSet.iloc[d:d + 1, :])
-                # print(label, data_dict[label].shape)
+                data_dict[label] = data_dict[label].append(data_set.iloc[d:d + 1, :])
+                import random
+                for key in data_dict.keys():
+                    if random.randint(0, 10) > 7:
+                        data_dict[key] = data_dict[key].append(data_set.iloc[d:d + 1, :])
 
+                # print(label, data_dict[label].shape)
         for i in range(len(self.label_map)):
-            if i in data_dict and len(data_dict[i]) > 6 and ensemble.size > 20:
-                best_clf = self.construct_tree_node(data_dict[i], ensemble_root)
-                treeNode.children[i] = best_clf
+            if i in data_dict and len(data_dict[i]) > 10 and ensemble.size > 20:
+                best_learner = self.constructTreeNode(data_dict[i], ensemble_root)
+                treeNode.children[i] = best_learner
         # print(EnsembleTree.nodeNum)
         return treeNode
 
@@ -96,26 +91,33 @@ class EnsembleTree:
         curr = self.root
         results = []
         while curr is not None:
-            if curr.clf.C > D:
+            if curr.learner.C > D:
                 break
-            y = self.label_map[curr.predict(sample)]
-            results.append(y)
-            # results = [y]
-            D -= curr.clf.C
+            result = curr.predict(sample)
+
+            y = self.label_map[curr.predictLabel(sample)]
+            if self.one_result:
+                results = [y]
+            else:
+                results.append(result)
+            #
+            D -= curr.learner.C
             curr = curr.children[y]
         return results, D
 
     def weightedVote(self, sample, D):
+        if self.task == Regression:
+            raise Exception("Weighted vote is only available for classification task")
         vote = Counter()
         curr = self.root
         rD = D
         while curr is not None:
-            if curr.clf.C > rD:
+            if curr.learner.C > rD:
                 break
             prob = curr.resProb(sample)
-            for c, p in zip(curr.clf.classes(), prob):
+            for c, p in zip(curr.learner.classes(), prob):
                 vote[c] += p
-            rD -= curr.clf.C
+            rD -= curr.learner.C
             curr = curr.children[self.label_map[curr.predict(sample)]]
         return vote, rD
 
@@ -124,12 +126,17 @@ class EnsembleTree:
         curr = self.root
         rD = D
         while curr is not None:
-            if curr.clf.C > rD:
+            if curr.learner.C > rD:
                 break
             y = curr.predict(sample)
-            vote[y] += 1
-            rD -= curr.clf.C
+            if not self.one_result:
+                vote[y] += 1
+            rD -= curr.learner.C
+            start = time.time()
             curr = curr.children[self.label_map[y]]
+            # print('one model', time.time() - start, 's')
+        if self.one_result:
+            vote[y] += 1
         return vote, rD
 
 
@@ -159,6 +166,26 @@ class EnsembleForest:
             pred = vote.most_common()[0][0]
             major_vote.append(pred)
         return np.array(major_vote)
+
+    def MSE(self, data, D):
+        # print(data)
+        error = np.zeros((data.shape[0]))
+        MAE = np.zeros((data.shape[0]))
+        for i in range(data.shape[0]):
+            real = data.iloc[i, -1]
+            rD = D
+            X = data.iloc[i, :]
+            results = []
+            for t in range(self.number):
+                result, rD = self.trees[t].predict(X, rD)
+                results.extend(result)
+                if rD <= 0:
+                    break
+            # print('re',results)
+            # print('real',real,'pred',np.mean(results))
+            error[i] = (np.mean(results) - real) ** 2
+            MAE[i] = abs(np.mean(results) - real)
+        return np.mean(error), np.mean(MAE)
 
     def majorityVote(self, data, D):
         conf_matrix = np.zeros((len(self.label_map), len(self.label_map)), dtype=np.int32)
@@ -212,33 +239,41 @@ class EnsembleForest:
 
 
 class EnsembleTreeNode:
-    def __init__(self, clf, children, features):
-        self.clf = clf  # 分类器
+    def __init__(self, learner, children, features):
+        self.learner = learner  # 学习器
         self.children = children
         self.features = features
 
     def predict(self, sample):
         X = sample.iloc[self.features].values.reshape(1, -1)  # 选择对应的输入特征
-        return self.clf.result(X)[0]
+        return self.learner.result(X)[0]
+
+    def predictLabel(self, sample):
+
+        X = sample.iloc[self.features].values.reshape(1, -1)
+        if self.learner.__class__ == Classifier:
+            return self.learner.result(X)[0]
+        else:
+            return U.normal(self.learner.result(X)[0], 10, 2)
 
     def resProb(self, sample):
         X = sample.iloc[self.features].values.reshape(1, -1)
-        return self.clf.resProb(X)[0]
+        return self.learner.resProb(X)[0]
 
 
-# def selectBestClf(dataSet, ensemble, rank=1, coefficient=1.5):
+# def selectBestClf(data_set, ensemble, rank=1, coefficient=1.5):
 #     ret = []
 #     for i in range(ensemble.size):
-#         X = dataSet.iloc[:, ensemble.features[i]]
+#         X = data_set.iloc[:, ensemble.features[i]]
 #         res = ensemble.classifiers[i].result(X)
 #         ret.append(res)
 #     # ret M*N M:# of sample, N:# of classifier
 #     ret = np.transpose(ret)
-#     Y = dataSet.values[:, -1:]
+#     Y = data_set.values[:, -1:]
 #     predict_result = np.hstack((ret, Y))
 #     infoGain = calInfoGain(predict_result)
 #     # print(pd.DataFrame(infoGain))
-#     accuracy = ensemble.accuracy(dataSet)
+#     accuracy = ensemble.accuracy(data_set)
 #     # print(pd.DataFrame(accuracy))
 #     obj = 0.5 * infoGain + coefficient * np.array(accuracy)
 #     # print(pd.DataFrame(obj))
